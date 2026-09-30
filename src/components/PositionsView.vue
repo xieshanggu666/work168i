@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 import { useHrStore } from '@/store/hr'
 
 const store = useHrStore()
@@ -13,6 +13,51 @@ const depts = ['技术部', '产品部', '设计部', '数据部', '质量部', 
 const cities = ['北京', '上海', '深圳', '杭州', '广州', '成都', '武汉', '南京']
 
 const appCount = pid => store.applications.filter(a => a.position_id === pid).length
+
+// ---------------- 按职位匹配策略 ----------------
+const DIM_META = [
+  { k: 'skill', label: '技能匹配' },
+  { k: 'year', label: '经验年限' },
+  { k: 'salary', label: '薪资带宽' },
+  { k: 'edu', label: '学历' },
+  { k: 'city', label: '城市地点' }
+]
+const strategyOpen = ref(false)
+const strategyPos = ref(null)
+const strategyForm = ref({ weights: {}, keyword_cap: 5 })
+const strategySaving = ref(false)
+const strategyMsg = ref('')
+const weightPct = k => Math.round((strategyForm.value.weights[k] || 0) * 100)
+const weightSumPct = computed(() => Object.values(strategyForm.value.weights).reduce((s, v) => s + (Number(v) || 0), 0))
+const lastVersionOf = pid => store.strategyVersions.find(v => v.position_id === pid) || null
+
+async function openStrategy(p) {
+  strategyPos.value = p
+  strategyMsg.value = ''
+  const r = await store.getStrategy(p.id)
+  const st = r.strategy || {}
+  strategyForm.value = { weights: { ...(st.weights || store.defaultStrategy.weights) }, keyword_cap: st.keywordCap ?? store.defaultStrategy.keywordCap }
+  strategyOpen.value = true
+}
+function setWeight(k, pct) { strategyForm.value.weights[k] = Math.round(Number(pct)) / 100 }
+async function submitStrategy(reset = false) {
+  strategySaving.value = true
+  strategyMsg.value = ''
+  const r = await store.publishStrategy(strategyPos.value.id, {
+    reset,
+    weights: strategyForm.value.weights,
+    keyword_cap: Number(strategyForm.value.keyword_cap),
+    recalc: true,
+    published_by: 'HR'
+  })
+  strategySaving.value = false
+  if (r.ok) {
+    strategyMsg.value = `策略已发布，并按新策略重算 ${r.recalced} 个候选人的推荐结果`
+    setTimeout(() => { strategyOpen.value = false }, 900)
+  } else {
+    strategyMsg.value = '发布失败，请重试'
+  }
+}
 
 function openNew() {
   editing.value = null
@@ -67,8 +112,17 @@ function submit() {
         <div class="pmeta muted">
           <span>经验 {{ p.years }} 年+</span><span>编制 {{ p.slots }}</span><span>应聘 {{ appCount(p.id) }}</span>
         </div>
+        <div class="stline">
+          <span class="st-tag" :class="{ custom: !!p.strategy }">
+            {{ p.strategy ? '⚙️ 已配置匹配策略' : '⚙️ 默认匹配策略' }}
+          </span>
+          <span class="muted st-w" v-if="lastVersionOf(p.id)">
+            技{{ Math.round(lastVersionOf(p.id).weights.skill * 100) }}% · 薪{{ Math.round(lastVersionOf(p.id).weights.salary * 100) }}% · 词+{{ lastVersionOf(p.id).keyword_cap }}
+          </span>
+        </div>
         <div class="acts">
           <button class="ghost" @click="openEdit(p)">编辑</button>
+          <button class="ghost" @click="openStrategy(p)">⚙️ 匹配策略</button>
           <button class="warn" v-if="p.status === 'open'" @click="store.updatePosition(p.id, { status: 'closed' })">关闭职位</button>
           <button class="succ" v-else @click="store.updatePosition(p.id, { status: 'open' })">重新开放</button>
         </div>
@@ -113,6 +167,39 @@ function submit() {
         </div>
       </div>
     </div>
+
+    <!-- 按职位配置/发布匹配策略 -->
+    <div class="modal" v-if="strategyOpen">
+      <div class="modal-box card">
+        <h3>⚙️ 匹配策略 · {{ strategyPos?.name }}</h3>
+        <div class="st-tip muted">
+          配置该职位的人岗评分权重并发布，发布后立即批量重算该职位的推荐结果；
+          <b>已投递候选人的投递时评分不受影响</b>。
+        </div>
+        <div class="st-form">
+          <div class="st-row" v-for="d in DIM_META" :key="d.k">
+            <label>{{ d.label }}</label>
+            <input type="range" min="0" max="100" step="5" :value="weightPct(d.k)" @input="setWeight(d.k, $event.target.value)" />
+            <b>{{ weightPct(d.k) }}%</b>
+          </div>
+          <div class="st-row">
+            <label>简历关键词加分上限</label>
+            <input type="range" min="0" max="10" step="1" v-model.number="strategyForm.keyword_cap" />
+            <b>+{{ strategyForm.keyword_cap }}</b>
+          </div>
+        </div>
+        <div class="st-sum" :class="{ ok: weightSumPct === 1, bad: weightSumPct !== 1 }">
+          权重合计 {{ Math.round(weightSumPct * 100) }}%
+          <em v-if="weightSumPct !== 1">（发布时将自动归一化为 100%）</em>
+        </div>
+        <div v-if="strategyMsg" class="st-msg">✅ {{ strategyMsg }}</div>
+        <div class="acts">
+          <button class="primary" :disabled="strategySaving" @click="submitStrategy(false)">发布并重算推荐</button>
+          <button class="warn" :disabled="strategySaving" @click="submitStrategy(true)">恢复默认</button>
+          <button class="ghost" @click="strategyOpen = false">关闭</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -141,4 +228,19 @@ function submit() {
 .chipx { display: inline-flex; align-items: center; gap: 4px; background: rgba(91,140,255,.14); border: 1px solid rgba(91,140,255,.35); padding: 2px 6px; border-radius: 10px; font-size: 12px; }
 .chipx select { background: transparent; border: none; color: var(--accent2); width: 34px; }
 .chipx .x { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 11px; padding: 0 2px; }
+.stline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.st-tag { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: var(--panel2); border: 1px solid var(--border); color: var(--muted); }
+.st-tag.custom { background: rgba(167,139,250,.15); color: var(--purple); border-color: rgba(167,139,250,.4); }
+.st-w { font-size: 11px; }
+.st-tip { line-height: 1.7; margin: 8px 0 12px; }
+.st-tip b { color: var(--green); font-weight: 600; }
+.st-form { display: flex; flex-direction: column; gap: 10px; }
+.st-row { display: grid; grid-template-columns: 130px 1fr 48px; align-items: center; gap: 10px; font-size: 13px; }
+.st-row input[type=range] { width: 100%; padding: 0; accent-color: var(--accent); }
+.st-row b { text-align: right; color: var(--accent2); }
+.st-sum { margin: 12px 0; font-size: 13px; padding: 8px 10px; border-radius: 8px; background: var(--panel2); }
+.st-sum.ok { color: var(--green); }
+.st-sum.bad { color: var(--accent2); }
+.st-sum em { font-style: normal; font-size: 11px; color: var(--muted); }
+.st-msg { margin-bottom: 10px; font-size: 12px; color: var(--green); }
 </style>

@@ -42,9 +42,11 @@ CREATE TABLE IF NOT EXISTS matches (
   candidate_id INTEGER NOT NULL,
   position_id INTEGER NOT NULL,
   score INTEGER NOT NULL DEFAULT 0,
-  dims TEXT NOT NULL DEFAULT '[]',   -- [{k:"技能",score:80}]
+  dims TEXT NOT NULL DEFAULT '[]',   -- [{k:"技能",score:80,w:0.4}]
   reason TEXT NOT NULL DEFAULT '',
-  weakness TEXT NOT NULL DEFAULT ''
+  weakness TEXT NOT NULL DEFAULT '',
+  computed_at TEXT NOT NULL DEFAULT '',  -- 最近一次按策略重算的时间（最新结果）
+  strategy_id INTEGER NOT NULL DEFAULT 0 -- 重算时使用的策略版本（0=系统默认/历史数据）
 );
 
 CREATE TABLE IF NOT EXISTS applications (
@@ -53,8 +55,30 @@ CREATE TABLE IF NOT EXISTS applications (
   candidate_id INTEGER NOT NULL,
   stage TEXT NOT NULL DEFAULT 'submitted', -- submitted/screening/interview/offer/hired/rejected
   updated TEXT NOT NULL,
-  recruiter TEXT NOT NULL DEFAULT ''
+  recruiter TEXT NOT NULL DEFAULT '',
+  match_snapshot TEXT NOT NULL DEFAULT '', -- 投递时的评分依据快照（永不随重算改变）
+  matched_at TEXT NOT NULL DEFAULT ''      -- 快照评分时间
 );
+
+-- 每个职位独立发布的人岗匹配策略（无记录=使用系统默认五维权重）
+CREATE TABLE IF NOT EXISTS match_strategies (
+  position_id INTEGER PRIMARY KEY,
+  weights TEXT NOT NULL DEFAULT '{}', -- {skill,year,salary,edu,city} 归一化后合计为1
+  keyword_cap INTEGER NOT NULL DEFAULT 5, -- 简历关键词加分上限（0=关闭）
+  published_at TEXT NOT NULL DEFAULT '',
+  published_by TEXT NOT NULL DEFAULT ''
+);
+
+-- 策略发布留痕，支持追溯每次重算所依据的版本
+CREATE TABLE IF NOT EXISTS strategy_versions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  position_id INTEGER NOT NULL,
+  weights TEXT NOT NULL DEFAULT '{}',
+  keyword_cap INTEGER NOT NULL DEFAULT 5,
+  published_at TEXT NOT NULL DEFAULT '',
+  published_by TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_versions_pos ON strategy_versions(position_id);
 
 CREATE TABLE IF NOT EXISTS interviews (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -81,6 +105,22 @@ CREATE TABLE IF NOT EXISTS channels (
   cost INTEGER NOT NULL DEFAULT 0
 );
 `)
+
+// ---------------- 兼容已有库：补列迁移 ----------------
+function hasColumn(table, col) {
+  return db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === col)
+}
+function addColumn(table, col, ddl) {
+  if (!hasColumn(table, col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${ddl}`)
+}
+addColumn('matches', 'computed_at', `TEXT NOT NULL DEFAULT ''`)
+addColumn('matches', 'strategy_id', `INTEGER NOT NULL DEFAULT 0`)
+addColumn('applications', 'match_snapshot', `TEXT NOT NULL DEFAULT ''`)
+addColumn('applications', 'matched_at', `TEXT NOT NULL DEFAULT ''`)
+
+// 系统默认匹配策略：五维权重合计 1.0，简历关键词为封顶附加分
+const DEFAULT_WEIGHTS = { skill: 0.4, year: 0.2, salary: 0.15, edu: 0.15, city: 0.1 }
+const DEFAULT_KEYWORD_CAP = 5
 
 const now = () => new Date().toISOString()
 const ts = () => new Date().toLocaleString('zh-CN')
@@ -135,4 +175,4 @@ function seed() {
 seed()
 
 export default db
-export { now, ts }
+export { now, ts, DEFAULT_WEIGHTS, DEFAULT_KEYWORD_CAP }

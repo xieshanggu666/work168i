@@ -8,8 +8,27 @@ const selPos = ref(null)
 const selCand = ref(null)
 const result = ref(null)
 const loading = ref(false)
+const recomputing = ref(false)
+const recomputeMsg = ref('')
 
 const appliedPair = (pid, cid) => store.applications.find(a => a.position_id === pid && a.candidate_id === cid)
+
+// 全局批量重算：按各职位已发布策略刷新全部推荐结果（不改变投递时快照）
+async function recomputeAll() {
+  recomputing.value = true
+  recomputeMsg.value = ''
+  const r = await store.recomputeAll()
+  recomputing.value = false
+  if (r?.ok) {
+    recomputeMsg.value = `已按各职位最新策略重算 ${r.positions} 个职位共 ${r.pairs} 组匹配`
+    if (result.value) runMatch()
+    setTimeout(() => { recomputeMsg.value = '' }, 4000)
+  }
+}
+
+const strategyTitle = st => st
+  ? `当前策略：技能${Math.round(st.weights.skill * 100)}% · 年限${Math.round(st.weights.year * 100)}% · 薪资${Math.round(st.weights.salary * 100)}% · 学历${Math.round(st.weights.edu * 100)}% · 城市${Math.round(st.weights.city * 100)}% · 关键词+${st.keywordCap}`
+  : ''
 
 async function loadMatchPos() {
   if (!selPos.value) return
@@ -55,6 +74,12 @@ const topN = computed(() => (result.value?.candidates || result.value?.positions
           </select>
         </template>
         <button class="primary" @click="runMatch" :disabled="(mode==='pos'&&!selPos)||(mode==='cand'&&!selCand)">开始匹配</button>
+        <span class="recalc-zone">
+          <button class="warn" :disabled="recomputing" @click="recomputeAll">
+            {{ recomputing ? '重算中…' : '🔁 按策略批量重算全部推荐' }}
+          </button>
+          <em v-if="recomputeMsg" class="recalc-msg">{{ recomputeMsg }}</em>
+        </span>
       </div>
     </div>
 
@@ -66,6 +91,14 @@ const topN = computed(() => (result.value?.candidates || result.value?.positions
         <div>
           <h3>{{ result.position.name }} <span class="tag">{{ result.position.dept }} · {{ result.position.city }}</span></h3>
           <div class="muted">薪资 ¥{{ result.position.salary_min }}K-{{ result.position.salary_max }}K · 经验 {{ result.position.years }}年+</div>
+          <div class="st-badge" :class="{ custom: result.strategy && !result.strategy.isDefault }" :title="strategyTitle(result.strategy)">
+            ⚙️ {{ result.strategy?.isDefault === false ? '职位定制策略' : '默认匹配策略' }}：
+            技{{ Math.round((result.strategy?.weights.skill ?? 0.4) * 100) }}% ·
+            年限{{ Math.round((result.strategy?.weights.year ?? 0.2) * 100) }}% ·
+            薪{{ Math.round((result.strategy?.weights.salary ?? 0.15) * 100) }}% ·
+            学历{{ Math.round((result.strategy?.weights.edu ?? 0.15) * 100) }}% ·
+            城{{ Math.round((result.strategy?.weights.city ?? 0.1) * 100) }}%
+          </div>
         </div>
         <div class="req-chips"><span class="skill-chip" v-for="s in result.position.skills" :key="s.k">{{ s.k }} x{{ s.w }}</span></div>
         <div class="h-metric"><b>{{ result.candidates.length }}</b><em class="muted">候选匹配</em></div>
@@ -142,6 +175,10 @@ const topN = computed(() => (result.value?.candidates || result.value?.positions
 .mode-toggle button.on { border-color: var(--accent); background: rgba(91,140,255,.15); color: var(--accent); }
 .pick { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .pick select { min-width: 240px; }
+.recalc-zone { display: inline-flex; align-items: center; gap: 10px; margin-left: auto; }
+.recalc-msg { font-style: normal; font-size: 12px; color: var(--green); }
+.st-badge { margin-top: 6px; font-size: 11px; color: var(--muted); background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 3px 8px; display: inline-block; }
+.st-badge.custom { color: var(--purple); border-color: rgba(167,139,250,.4); background: rgba(167,139,250,.1); }
 .result-head { display: flex; align-items: center; gap: 20px; justify-content: space-between; flex-wrap: wrap; }
 .h-metric { text-align: center; }
 .h-metric b { font-size: 30px; color: var(--accent); display: block; }

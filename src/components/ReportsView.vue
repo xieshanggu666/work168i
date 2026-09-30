@@ -3,6 +3,11 @@ import { computed } from 'vue'
 import { useHrStore } from '@/store/hr'
 
 const store = useHrStore()
+// 匹配度分布口径：snapshot=投递时历史评分，latest=按最新策略重算结果
+const scoreView = ref('snapshot')
+const scoreOf = a => scoreView.value === 'latest'
+  ? (a.match?.score ?? a.matchSnapshot?.score ?? null)
+  : (a.matchSnapshot?.score ?? a.match?.score ?? null)
 
 const funnel = computed(() => {
   const order = ['submitted', 'screening', 'interview', 'offer', 'hired']
@@ -50,10 +55,10 @@ const deptProgress = computed(() => {
 
 const matchDist = computed(() => {
   const buckets = { sink: { label: '低匹配 0-59', count: 0, color: 'var(--red)' }, mid: { label: '一般 60-79', count: 0, color: 'var(--accent2)' }, hi: { label: '高匹配 80+', count: 0, color: 'var(--green)' } }
-  // 直接使用已落库的人岗匹配总分，与职位推荐/候选人推荐保持同一口径
+  // 按所选评分口径统计：投递时历史评分（快照）或最新重算结果
   store.applications.forEach(a => {
-    if (!a.match) return
-    const s = a.match.score
+    const s = scoreOf(a)
+    if (s == null) return
     if (s >= 80) buckets.hi.count++
     else if (s >= 60) buckets.mid.count++
     else buckets.sink.count++
@@ -61,6 +66,16 @@ const matchDist = computed(() => {
   return Object.values(buckets)
 })
 const matchTotal = computed(() => matchDist.value.reduce((s, b) => s + b.count, 0) || 1)
+
+const avgOfView = view => {
+  const vals = store.applications
+    .map(a => view === 'latest' ? (a.match?.score ?? a.matchSnapshot?.score) : (a.matchSnapshot?.score ?? a.match?.score))
+    .filter(s => s != null)
+  return vals.length ? Math.round(vals.reduce((s, v) => s + v, 0) / vals.length) : 0
+}
+const avgSnapshot = computed(() => avgOfView('snapshot'))
+const avgLatest = computed(() => avgOfView('latest'))
+const avgCurrent = computed(() => scoreView.value === 'latest' ? avgLatest.value : avgSnapshot.value)
 
 function donutPath(segIdx) {
   const total = matchTotal.value
@@ -139,6 +154,10 @@ const avgSalary = computed(() => {
     <div class="row2">
       <div class="card">
         <h3>🎯 候选人匹配度分布</h3>
+        <div class="caliber">
+          <button :class="{ on: scoreView === 'snapshot' }" @click="scoreView = 'snapshot'">🕘 投递时评分</button>
+          <button :class="{ on: scoreView === 'latest' }" @click="scoreView = 'latest'">🆕 最新结果</button>
+        </div>
         <div class="donut-wrap">
           <svg viewBox="0 0 160 160" class="donut">
             <circle cx="80" cy="80" r="62" fill="none" stroke="#222a4a" stroke-width="26"/>
@@ -146,11 +165,19 @@ const avgSalary = computed(() => {
               :stroke="s.color" stroke-width="26"
               :stroke-dasharray="s.len" :stroke-dashoffset="s.offset" transform="rotate(-90 80 80)"/>
           </svg>
-          <div class="center"><b>{{ matchTotal }}</b><em class="muted">已匹配应聘</em></div>
+          <div class="center"><b>{{ avgCurrent }}</b><em class="muted">{{ scoreView === 'latest' ? '最新平均分' : '投递时平均分' }}</em></div>
+        </div>
+        <div class="avg-cmp muted">
+          投递时平均 <b :class="avgSnapshot >= 75 ? 's-hi' : avgSnapshot >= 55 ? 's-mid' : 's-lo'">{{ avgSnapshot }}</b>
+          → 最新平均 <b :class="avgLatest >= 75 ? 's-hi' : avgLatest >= 55 ? 's-mid' : 's-lo'">{{ avgLatest }}</b>
+          <span v-if="avgLatest - avgSnapshot" :class="avgLatest - avgSnapshot > 0 ? 'up' : 'down'">
+            （{{ avgLatest - avgSnapshot > 0 ? '+' : '' }}{{ avgLatest - avgSnapshot }}）
+          </span>
         </div>
         <div class="leg">
           <div v-for="s in matchDist" :key="s.label"><span class="sw" :style="{background:s.color}"></span>{{ s.label }}<b>{{ s.count }}人</b></div>
         </div>
+        <div class="muted tip">「投递时评分」固化于候选人投递瞬间，是历史招聘决策依据；「最新结果」按职位当前匹配策略重算，用于评估当下推荐质量。</div>
       </div>
 
       <div class="card">
@@ -197,6 +224,13 @@ const avgSalary = computed(() => {
 .donut { width: 160px; height: 160px; }
 .center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
 .center b { font-size: 26px; }
+.caliber { display: flex; gap: 6px; margin-bottom: 10px; }
+.caliber button { padding: 5px 10px; font-size: 12px; opacity: .75; }
+.caliber button.on { opacity: 1; border-color: var(--accent); background: rgba(91,140,255,.15); color: var(--accent); }
+.avg-cmp { text-align: center; font-size: 12px; margin-top: 4px; }
+.avg-cmp b { padding: 1px 7px; border-radius: 8px; margin: 0 2px; }
+.avg-cmp .up { color: var(--green); }
+.avg-cmp .down { color: var(--red); }
 .leg { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
 .leg div { display: flex; align-items: center; gap: 6px; font-size: 13px; }
 .leg b { margin-left: auto; }

@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS positions (
   years INTEGER NOT NULL DEFAULT 2,
   slots INTEGER NOT NULL DEFAULT 1,    -- 编制
   status TEXT NOT NULL DEFAULT 'open', -- open/closed
+  match_strategy TEXT NOT NULL DEFAULT '',  -- 已发布的匹配策略 JSON（空=平台默认）
+  strategy_published_at TEXT NOT NULL DEFAULT '',
   created TEXT NOT NULL
 );
 
@@ -42,9 +44,11 @@ CREATE TABLE IF NOT EXISTS matches (
   candidate_id INTEGER NOT NULL,
   position_id INTEGER NOT NULL,
   score INTEGER NOT NULL DEFAULT 0,
-  dims TEXT NOT NULL DEFAULT '[]',   -- [{k:"技能",score:80}]
+  dims TEXT NOT NULL DEFAULT '[]',   -- [{k:"技能",score:80,w:.4}]
   reason TEXT NOT NULL DEFAULT '',
-  weakness TEXT NOT NULL DEFAULT ''
+  weakness TEXT NOT NULL DEFAULT '',
+  strategy TEXT NOT NULL DEFAULT '',  -- 本次评分使用的匹配策略快照 JSON
+  updated TEXT NOT NULL DEFAULT ''    -- 最近一次（重算）评分时间
 );
 
 CREATE TABLE IF NOT EXISTS applications (
@@ -53,7 +57,14 @@ CREATE TABLE IF NOT EXISTS applications (
   candidate_id INTEGER NOT NULL,
   stage TEXT NOT NULL DEFAULT 'submitted', -- submitted/screening/interview/offer/hired/rejected
   updated TEXT NOT NULL,
-  recruiter TEXT NOT NULL DEFAULT ''
+  recruiter TEXT NOT NULL DEFAULT '',
+  -- 投递时刻冻结的评分依据快照，之后批量重算不会覆盖，用于看板/报表还原历史评分
+  snap_score INTEGER,
+  snap_dims TEXT,
+  snap_reason TEXT,
+  snap_weakness TEXT,
+  snap_strategy TEXT,
+  snap_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS interviews (
@@ -84,6 +95,46 @@ CREATE TABLE IF NOT EXISTS channels (
 
 const now = () => new Date().toISOString()
 const ts = () => new Date().toLocaleString('zh-CN')
+
+// ---------------- 旧库兼容迁移 ----------------
+// CREATE TABLE IF NOT EXISTS 不会为已存在的表补列，这里逐列探测并 ALTER，兼容已有匹配/投递记录
+function migrate() {
+  const cols = tbl => new Set(db.prepare(`PRAGMA table_info(${tbl})`).all().map(c => c.name))
+
+  const matchCols = cols('matches')
+  ;[
+    ['strategy', "TEXT NOT NULL DEFAULT ''"],
+    ['updated', "TEXT NOT NULL DEFAULT ''"]
+  ].forEach(([name, decl]) => { if (!matchCols.has(name)) db.exec(`ALTER TABLE matches ADD COLUMN ${name} ${decl}`) })
+
+  const posCols = cols('positions')
+  ;[
+    ['match_strategy', "TEXT NOT NULL DEFAULT ''"],
+    ['strategy_published_at', "TEXT NOT NULL DEFAULT ''"]
+  ].forEach(([name, decl]) => { if (!posCols.has(name)) db.exec(`ALTER TABLE positions ADD COLUMN ${name} ${decl}`) })
+
+  const appCols = cols('applications')
+  ;[
+    ['snap_score', 'INTEGER'],
+    ['snap_dims', 'TEXT'],
+    ['snap_reason', 'TEXT'],
+    ['snap_weakness', 'TEXT'],
+    ['snap_strategy', 'TEXT'],
+    ['snap_at', 'TEXT']
+  ].forEach(([name, decl]) => { if (!appCols.has(name)) db.exec(`ALTER TABLE applications ADD COLUMN ${name} ${decl}`) })
+
+  // 历史投递记录没有快照：以当时已落库的匹配结果回填（找不到则留空，前端按"无历史评分"处理）
+  const needSnap = db.prepare('SELECT COUNT(*) c FROM applications WHERE snap_score IS NULL').get().c
+  if (needSnap > 0) {
+    const findMatch = db.prepare('SELECT * FROM matches WHERE candidate_id=? AND position_id=?')
+    const snap = db.prepare('UPDATE applications SET snap_score=?, snap_dims=?, snap_reason=?, snap_weakness=?, snap_strategy=?, snap_at=? WHERE id=?')
+    db.prepare('SELECT * FROM applications WHERE snap_score IS NULL').all().forEach(a => {
+      const m = findMatch.get(a.candidate_id, a.position_id)
+      if (m) snap.run(m.score, m.dims, m.reason, m.weakness, m.strategy || '', m.updated || a.updated || ts(), a.id)
+    })
+  }
+}
+migrate()
 
 function seed() {
   const n = db.prepare('SELECT COUNT(*) c FROM positions').get().c

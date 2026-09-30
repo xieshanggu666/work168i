@@ -1,8 +1,12 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useHrStore } from '@/store/hr'
 
 const store = useHrStore()
+const scoreView = ref('latest') // latest=策略最新结果, snapshot=投递时历史评分
+
+// 按口径取应聘记录上的评分
+const scoreOf = a => scoreView.value === 'snapshot' ? (a.snapshot ? a.snapshot.score : null) : (a.match ? a.match.score : null)
 
 const funnel = computed(() => {
   const order = ['submitted', 'screening', 'interview', 'offer', 'hired']
@@ -48,32 +52,34 @@ const deptProgress = computed(() => {
   return Object.entries(map).map(([k, v]) => ({ dept: k, ...v }))
 })
 
+const makeBuckets = () => ({
+  sink: { label: '低匹配 0-59', count: 0, color: 'var(--red)' },
+  mid: { label: '一般 60-79', count: 0, color: 'var(--accent2)' },
+  hi: { label: '高匹配 80+', count: 0, color: 'var(--green)' }
+})
+
+// 匹配度分布按口径切换：最新结果 vs 投递时历史评分，两口径使用同一分桶标准
 const matchDist = computed(() => {
-  const buckets = { sink: { label: '低匹配 0-59', count: 0, color: 'var(--red)' }, mid: { label: '一般 60-79', count: 0, color: 'var(--accent2)' }, hi: { label: '高匹配 80+', count: 0, color: 'var(--green)' } }
-  // 直接使用已落库的人岗匹配总分，与职位推荐/候选人推荐保持同一口径
+  const buckets = makeBuckets()
   store.applications.forEach(a => {
-    if (!a.match) return
-    const s = a.match.score
+    const s = scoreOf(a)
+    if (s == null) return
     if (s >= 80) buckets.hi.count++
     else if (s >= 60) buckets.mid.count++
     else buckets.sink.count++
   })
   return Object.values(buckets)
 })
+
+// 最新 vs 历史：可同时取到两种评分的投递，用于观察策略调整后分数迁移
+const bothScored = computed(() => store.applications.filter(a => a.match && a.snapshot))
+const avgLatest = computed(() => bothScored.value.length ? Math.round(bothScored.value.reduce((s, a) => s + a.match.score, 0) / bothScored.value.length) : null)
+const avgSnapshot = computed(() => bothScored.value.length ? Math.round(bothScored.value.reduce((s, a) => s + a.snapshot.score, 0) / bothScored.value.length) : null)
+const upgraded = computed(() => bothScored.value.filter(a => a.match.score > a.snapshot.score).length)
+const downgraded = computed(() => bothScored.value.filter(a => a.match.score < a.snapshot.score).length)
+
 const matchTotal = computed(() => matchDist.value.reduce((s, b) => s + b.count, 0) || 1)
 
-function donutPath(segIdx) {
-  const total = matchTotal.value
-  let off = 0
-  const R = 62, C = 2 * Math.PI * R
-  const segs = matchDist.value.map((b, i) => {
-    const len = (b.count / total) * C
-    const s = { off: -off, color: b.color }
-    off += len
-    return s
-  })
-  return segs[segIdx]
-}
 const donutSegs = computed(() => matchDist.value.map((b, i) => {
   const len = (b.count / matchTotal.value) * 389.4
   return { ...b, len, offset: -(matchDist.value.slice(0, i).reduce((s, x) => s + ((x.count / matchTotal.value) * 389.4), 0)) }
@@ -138,7 +144,13 @@ const avgSalary = computed(() => {
 
     <div class="row2">
       <div class="card">
-        <h3>🎯 候选人匹配度分布</h3>
+        <h3>
+          🎯 候选人匹配度分布
+          <div class="score-toggle">
+            <button :class="{ on: scoreView === 'latest' }" @click="scoreView = 'latest'">最新评分</button>
+            <button :class="{ on: scoreView === 'snapshot' }" @click="scoreView = 'snapshot'">投递时评分</button>
+          </div>
+        </h3>
         <div class="donut-wrap">
           <svg viewBox="0 0 160 160" class="donut">
             <circle cx="80" cy="80" r="62" fill="none" stroke="#222a4a" stroke-width="26"/>
@@ -146,11 +158,12 @@ const avgSalary = computed(() => {
               :stroke="s.color" stroke-width="26"
               :stroke-dasharray="s.len" :stroke-dashoffset="s.offset" transform="rotate(-90 80 80)"/>
           </svg>
-          <div class="center"><b>{{ matchTotal }}</b><em class="muted">已匹配应聘</em></div>
+          <div class="center"><b>{{ matchTotal }}</b><em class="muted">{{ scoreView === 'snapshot' ? '历史评分应聘' : '最新评分应聘' }}</em></div>
         </div>
         <div class="leg">
           <div v-for="s in matchDist" :key="s.label"><span class="sw" :style="{background:s.color}"></span>{{ s.label }}<b>{{ s.count }}人</b></div>
         </div>
+        <div class="muted tip">「最新评分」为策略发布与批量重算后的结果；「投递时评分」为候选人投递那一刻冻结的历史依据，两者独立统计、互不覆盖。</div>
       </div>
 
       <div class="card">
@@ -160,6 +173,21 @@ const avgSalary = computed(() => {
           <div><em class="muted">筛选 → 面试</em><b>{{ funnel[2]?.conv ?? 0 }}%</b></div>
           <div><em class="muted">面试 → Offer</em><b>{{ funnel[3]?.conv ?? 0 }}%</b></div>
           <div><em class="muted">Offer → 录用</em><b>{{ funnel[4]?.conv ?? 0 }}%</b></div>
+        </div>
+        <div class="score-cmp" v-if="bothScored.length">
+          <div class="cmp-title muted">最新评分 vs 投递时评分（{{ bothScored.length }} 份在库应聘）</div>
+          <div class="cmp-row">
+            <span>平均分</span>
+            <b class="hist-score">{{ avgSnapshot }}</b>
+            <span class="arrow">→</span>
+            <b class="new-score">{{ avgLatest }}</b>
+            <em :class="avgLatest - avgSnapshot > 0 ? 'up' : avgLatest - avgSnapshot < 0 ? 'down' : ''">
+              {{ avgLatest - avgSnapshot > 0 ? '▲' : avgLatest - avgSnapshot < 0 ? '▼' : '＝' }}{{ Math.abs(avgLatest - avgSnapshot) }}
+            </em>
+          </div>
+          <div class="cmp-row sub">
+            <span>分数上升 <b class="up">{{ upgraded }}</b> 人 · 下降 <b class="down">{{ downgraded }}</b> 人 · 持平 <b>{{ bothScored.length - upgraded - downgraded }}</b> 人</span>
+          </div>
         </div>
         <div class="muted tip">建议：若「筛选→面试」转化低，可优化职位JD与筛选标准；「Offer→录用」低则需复核薪酬竞争力与流程效率。</div>
       </div>
@@ -205,4 +233,17 @@ const avgSalary = computed(() => {
 .kpis div { background: var(--panel2); border-radius: 10px; padding: 14px; text-align: center; }
 .kpis em { display: block; font-style: normal; font-size: 12px; }
 .kpis b { font-size: 24px; color: var(--accent); }
+.score-toggle { display: inline-flex; margin-left: auto; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.score-toggle button { border: none; border-radius: 0; padding: 4px 10px; font-size: 11px; background: transparent; }
+.score-toggle button.on { background: rgba(91,140,255,.18); color: var(--accent); }
+.score-cmp { margin-top: 12px; background: var(--panel2); border-radius: 10px; padding: 12px 14px; }
+.cmp-title { font-size: 12px; margin-bottom: 8px; }
+.cmp-row { display: flex; align-items: center; gap: 10px; font-size: 14px; }
+.cmp-row .arrow { color: var(--muted); }
+.hist-score { color: var(--accent2); font-size: 20px; }
+.new-score { color: var(--green); font-size: 20px; }
+.cmp-row em { font-style: normal; font-size: 12px; }
+.cmp-row em.up, .up { color: var(--green); }
+.cmp-row em.down, .down { color: var(--red); }
+.cmp-row.sub { margin-top: 6px; font-size: 12px; color: var(--muted); }
 </style>

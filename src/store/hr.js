@@ -38,6 +38,17 @@ export const useHrStore = defineStore('hr', {
     async summary() { return j('GET', '/summary') },
     addPosition(p) { return this.api('POST', '/positions', p) },
     updatePosition(id, p) { return this.api('POST', `/positions/${id}`, p) },
+    // 匹配策略：读取 / 暂存配置 / 发布并重算
+    getStrategy(pid) { return j('GET', `/positions/${pid}/strategy`) },
+    saveStrategy(pid, strategy, publish = false) {
+      return this.api('POST', `/positions/${pid}/strategy`, { strategy, publish })
+    },
+    resetStrategy(pid) { return this.api('POST', `/positions/${pid}/strategy`, { reset: true }) },
+    publishStrategy(pid, strategy) {
+      return this.api('POST', `/positions/${pid}/strategy/publish`, strategy ? { strategy } : {})
+    },
+    // 批量重算：单个 / 指定多个 / 全部在招职位
+    recalc(scope = {}) { return this.api('POST', '/match/recalc', scope) },
     addCandidate(c) { return this.api('POST', '/candidates', c) },
     delCandidate(id) { return this.api('DELETE', `/candidates/${id}`) },
     apply(pid, cid) { return this.api('POST', '/applications', { position_id: pid, candidate_id: cid }) },

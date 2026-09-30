@@ -29,7 +29,14 @@ function runMatch() {
 
 const scoreClass = s => s >= 75 ? 's-hi' : s >= 55 ? 's-mid' : 's-lo'
 
-const topN = computed(() => (result.value?.candidates || result.value?.positions || []).filter(m => (m.score || 0) >= 55).length)
+const DIM_LABELS = { w_skill: '技能', w_year: '年限', w_salary: '薪资', w_edu: '学历', w_city: '城市' }
+const strategySummary = st => {
+  if (!st) return ''
+  return ['w_skill', 'w_year', 'w_salary', 'w_edu', 'w_city']
+    .map(k => `${DIM_LABELS[k]}${Math.round((st[k] || 0) * 100)}%`).join(' · ')
+}
+
+const topN = computed(() => (result.value?.candidates || result.value?.positions || []).filter(m => m.recommended).length)
 </script>
 
 <template>
@@ -64,19 +71,22 @@ const topN = computed(() => (result.value?.candidates || result.value?.positions
     <template v-else-if="result && mode === 'pos'">
       <div class="result-head card">
         <div>
-          <h3>{{ result.position.name }} <span class="tag">{{ result.position.dept }} · {{ result.position.city }}</span></h3>
+          <h3>{{ result.position.name }} <span class="tag">{{ result.position.dept }} · {{ result.position.city }}</span>
+            <span class="tag" :class="{ custom: result.strategy?.custom }">{{ result.strategy?.custom ? '⚙️ 自定义策略' : '⚙️ 默认策略' }}</span>
+          </h3>
           <div class="muted">薪资 ¥{{ result.position.salary_min }}K-{{ result.position.salary_max }}K · 经验 {{ result.position.years }}年+</div>
+          <div class="muted st-line">生效权重：{{ strategySummary(result.strategy) }} · 推荐线 {{ result.rec_threshold }} 分</div>
         </div>
         <div class="req-chips"><span class="skill-chip" v-for="s in result.position.skills" :key="s.k">{{ s.k }} x{{ s.w }}</span></div>
-        <div class="h-metric"><b>{{ result.candidates.length }}</b><em class="muted">候选匹配</em></div>
+        <div class="h-metric"><b>{{ topN }}</b><em class="muted">推荐候选</em></div>
       </div>
 
       <div class="mlist">
-        <div class="mcard card" v-for="(m, i) in result.candidates" :key="m.candidate_id" :class="m.score >= 55 ? 'rec' : ''">
+        <div class="mcard card" v-for="(m, i) in result.candidates" :key="m.candidate_id" :class="{ rec: m.recommended }">
           <div class="rank">{{ i + 1 }}</div>
           <div class="score" :class="scoreClass(m.score)">{{ m.score }}</div>
           <div class="body">
-            <div class="nm">{{ m.name }} <span class="tag" v-if="m.score >= 75">高匹配</span></div>
+            <div class="nm">{{ m.name }} <span class="tag" v-if="m.score >= 75">高匹配</span><span class="tag rec-tag" v-else-if="m.recommended">推荐</span></div>
             <div class="sub muted">{{ m.years }}年 · {{ m.edu }} · {{ m.city }} · 期望¥{{ m.exp_salary.toLocaleString() }}</div>
             <div class="chips"><span class="skill-chip" v-for="s in m.skills" :key="s.k">{{ s.k }}</span></div>
             <div class="reason">
@@ -107,7 +117,7 @@ const topN = computed(() => (result.value?.candidates || result.value?.positions
         <div class="h-metric"><b>{{ result.positions.length }}</b><em class="muted">可匹配职位</em></div>
       </div>
       <div class="mlist">
-        <div class="mcard card" v-for="(m, i) in result.positions" :key="m.position_id" :class="m.score >= 55 ? 'rec' : ''">
+        <div class="mcard card" v-for="(m, i) in result.positions" :key="m.position_id" :class="{ rec: m.recommended }">
           <div class="rank">{{ i + 1 }}</div>
           <div class="score" :class="scoreClass(m.score)">{{ m.score }}</div>
           <div class="body">
@@ -143,6 +153,9 @@ const topN = computed(() => (result.value?.candidates || result.value?.positions
 .pick { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .pick select { min-width: 240px; }
 .result-head { display: flex; align-items: center; gap: 20px; justify-content: space-between; flex-wrap: wrap; }
+.st-line { margin-top: 4px; }
+.tag.custom { background: rgba(167,139,250,.16); color: var(--purple); border-color: rgba(167,139,250,.4); }
+.rec-tag { background: rgba(87,214,160,.15); color: var(--green); border-color: rgba(87,214,160,.4); }
 .h-metric { text-align: center; }
 .h-metric b { font-size: 30px; color: var(--accent); display: block; }
 .mlist { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 14px; }
